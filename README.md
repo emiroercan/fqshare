@@ -93,7 +93,7 @@ Built for use on public networks and around untrusted devices.
 - Sending from the laptop to the phone.
 - Concurrent transfers from several phones (one Bluetooth session at a time).
 - Google-account "contacts only" visibility: while *Receive* is on, the laptop
-  is visible to everyone nearby (every transfer still needs your Accept).
+  is visible to everyone nearby
 
 ## Credits and licence
 

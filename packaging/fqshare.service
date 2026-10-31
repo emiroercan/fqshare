@@ -22,6 +22,8 @@ PrivateUsers=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/Downloads
+# History of received items (~/.local/state/fqshare)
+StateDirectory=fqshare
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

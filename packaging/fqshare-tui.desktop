@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FQShare Dashboard
+GenericName=Receive from phone
+Comment=See and accept incoming Quick Share transfers in the terminal
+Exec=fqshare tui
+Terminal=true
+Icon=smartphone
+Categories=Network;FileTransfer;
+Keywords=quick share;nearby share;android;phone;bluetooth;tui;

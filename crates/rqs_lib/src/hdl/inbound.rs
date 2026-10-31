@@ -1368,6 +1368,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
                 pin_code: self.state.pin_code.clone(),
                 total_bytes,
                 ack_bytes: Default::default(),
+                via_wifi: false,
             };
 
             info!("Asking for user consent: {:?}", metadata);
@@ -1393,6 +1394,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
                         payload: Default::default(),
                         total_bytes: Default::default(),
                         ack_bytes: Default::default(),
+                        via_wifi: false,
                     };
 
                     info!("Asking for user consent: {:?}", metadata);
@@ -1417,6 +1419,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
                         payload: Default::default(),
                         total_bytes: Default::default(),
                         ack_bytes: Default::default(),
+                        via_wifi: false,
                     };
 
                     info!("Asking for user consent: {:?}", metadata);
@@ -1450,6 +1453,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
                 payload: Default::default(),
                 total_bytes: Default::default(),
                 ack_bytes: Default::default(),
+                via_wifi: false,
             };
 
             self.update_state(
@@ -1499,12 +1503,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
     async fn accept_transfer(&mut self) -> Result<(), anyhow::Error> {
         let ids: Vec<i64> = self.state.transferred_files.keys().cloned().collect();
 
+        let mut saved = Vec::with_capacity(ids.len());
         for id in ids {
             let mfi = self.state.transferred_files.get_mut(&id).unwrap();
 
             let file = create_unique(&mut mfi.file_url)?;
             info!("Created file: {:?}", &file);
             mfi.file = Some(file);
+            saved.push(mfi.file_url.to_string_lossy().into_owned());
+        }
+        // Report the paths actually written (names may have been bumped to
+        // avoid overwriting).
+        if !saved.is_empty() {
+            if let Some(tmd) = self.state.transfer_metadata.as_mut() {
+                tmd.payload = Some(TransferPayload::Files(saved));
+            }
         }
 
         let frame = sharing_nearby::Frame {
@@ -1956,6 +1969,15 @@ impl InboundRequest<crate::hdl::MigratableStream> {
         // Swap to the TCP channel; the payload loop resumes over Wi-Fi.
         self.socket = crate::hdl::MigratableStream::Tcp(tcp);
         info!("BWU: upgraded to Wi-Fi-LAN; payload continues over TCP");
+        self.update_state(
+            |e| {
+                if let Some(tmd) = e.transfer_metadata.as_mut() {
+                    tmd.via_wifi = true;
+                }
+            },
+            true,
+        )
+        .await;
         Ok(())
     }
 }

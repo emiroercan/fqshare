@@ -20,6 +20,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 directories = "6"
 futures = "0.3"
+serde_json = "1"
+base64 = "0.22"
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tachyonfx = "0.25"
+ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+tui-big-text = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [profile.release]
 lto = true

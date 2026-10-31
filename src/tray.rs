@@ -3,10 +3,13 @@
 use ksni::TrayMethods;
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Command {
     ToggleReceive,
     Receive,
+    Hide,
+    Accept(String),
+    Decline(String),
     OpenFolder,
     RestartBluetooth,
     Quit,

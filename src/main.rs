@@ -8,9 +8,12 @@ extern crate log;
 
 mod config;
 mod desktop;
+mod state;
 mod tray;
+mod tui;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rqs_lib::channel::{ChannelMessage, Message, TransferAction, TransferKind};
@@ -25,9 +28,10 @@ use tray::Command;
 const BUS_NAME: &str = "io.github.fqshare.FQShare";
 const BUS_PATH: &str = "/io/github/fqshare/FQShare";
 
-/// Session-bus interface used by a second launch of the app.
+/// Session-bus interface for the launcher and the TUI.
 struct Remote {
     tx: mpsc::UnboundedSender<Command>,
+    snapshot: Arc<Mutex<state::Snapshot>>,
 }
 
 #[zbus::interface(name = "io.github.fqshare.FQShare")]
@@ -36,6 +40,29 @@ impl Remote {
     fn receive(&self) {
         let _ = self.tx.send(Command::Receive);
     }
+    fn hide(&self) {
+        let _ = self.tx.send(Command::Hide);
+    }
+    fn toggle_receive(&self) {
+        let _ = self.tx.send(Command::ToggleReceive);
+    }
+    fn accept(&self, id: String) {
+        let _ = self.tx.send(Command::Accept(id));
+    }
+    fn decline(&self, id: String) {
+        let _ = self.tx.send(Command::Decline(id));
+    }
+    fn open_folder(&self) {
+        let _ = self.tx.send(Command::OpenFolder);
+    }
+    fn restart_bluetooth(&self) {
+        let _ = self.tx.send(Command::RestartBluetooth);
+    }
+    /// Current state as JSON (see `state::Snapshot`).
+    fn get_state(&self) -> String {
+        let snap = self.snapshot.lock().map(|s| s.clone()).unwrap_or_default();
+        serde_json::to_string(&snap).unwrap_or_default()
+    }
 }
 
 /// Unanswered requests are declined after this long.
@@ -43,13 +70,13 @@ const CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Don't hide in the middle of a transfer; check again after this long.
 const HIDE_RETRY: Duration = Duration::from_secs(30);
 
-#[derive(Default)]
 struct Transfer {
     notification: u32,
     sender: String,
     waiting: bool,
     consent_deadline: Option<Instant>,
     last_progress: Option<Instant>,
+    view: state::TransferView,
 }
 
 struct App {
@@ -64,6 +91,8 @@ struct App {
     /// Notification id → what its buttons act on, after a transfer ended.
     results: HashMap<u32, Done>,
     hotspot_ready: bool,
+    snapshot: Arc<Mutex<state::Snapshot>>,
+    history: Vec<state::HistoryItem>,
 }
 
 enum Done {
@@ -74,6 +103,10 @@ enum Done {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("tui") {
+        return tui::run().await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -88,7 +121,10 @@ async fn main() -> anyhow::Result<()> {
     // asks the running one to start receiving, then exits.
     let bus = zbus::Connection::session().await?;
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    bus.object_server().at(BUS_PATH, Remote { tx: cmd_tx.clone() }).await?;
+    let snapshot = Arc::new(Mutex::new(state::Snapshot::default()));
+    bus.object_server()
+        .at(BUS_PATH, Remote { tx: cmd_tx.clone(), snapshot: snapshot.clone() })
+        .await?;
     let flags = zbus::fdo::RequestNameFlags::DoNotQueue.into();
     match bus.request_name_with_flags(BUS_NAME, flags).await {
         Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => {}
@@ -136,7 +172,10 @@ async fn main() -> anyhow::Result<()> {
         by_notification: HashMap::new(),
         results: HashMap::new(),
         hotspot_ready,
+        snapshot,
+        history: state::load_history(),
     };
+    app.publish();
 
     if std::env::args().any(|a| a == "--receive") {
         app.set_receiving(true).await;
@@ -166,6 +205,9 @@ impl App {
                         info!("Launcher: receive");
                         self.set_receiving(true).await;
                     }
+                    Command::Hide => self.set_receiving(false).await,
+                    Command::Accept(id) => self.respond(&id, true).await,
+                    Command::Decline(id) => self.respond(&id, false).await,
                     Command::OpenFolder => self.desktop.show(&[], &self.cfg.download_dir).await,
                     Command::RestartBluetooth => {
                         if self.restart_bluetooth().await {
@@ -180,6 +222,7 @@ impl App {
                 _ = tokio::signal::ctrl_c() => break,
                 _ = term.recv() => break,
             }
+            self.publish();
         }
         info!("FQShare: quitting");
     }
@@ -252,6 +295,45 @@ impl App {
         }
         warn!("Not running under systemd; start FQShare again yourself");
         true
+    }
+
+    /// Refresh what the TUI sees.
+    fn publish(&self) {
+        let now = Instant::now();
+        let mut transfers: Vec<state::TransferView> = self
+            .transfers
+            .values()
+            .map(|t| {
+                let mut v = t.view.clone();
+                v.answer_secs = t
+                    .consent_deadline
+                    .map(|d| d.saturating_duration_since(now).as_secs())
+                    .unwrap_or(0);
+                v
+            })
+            .collect();
+        transfers.sort_by(|a, b| a.id.cmp(&b.id));
+        let snap = state::Snapshot {
+            device_name: self.cfg.device_name.clone(),
+            download_dir: self.cfg.download_dir.to_string_lossy().into_owned(),
+            visible_secs: self
+                .visible_until
+                .map(|u| u.saturating_duration_since(now).as_secs().max(1))
+                .unwrap_or(0),
+            visible_minutes: self.cfg.visible_minutes,
+            hotspot_ready: self.hotspot_ready,
+            transfers,
+            history: self.history.clone(),
+        };
+        if let Ok(mut s) = self.snapshot.lock() {
+            *s = snap;
+        }
+    }
+
+    fn remember(&mut self, item: state::HistoryItem) {
+        self.history.insert(0, item);
+        self.history.truncate(state::HISTORY_MAX);
+        state::save_history(&self.history);
     }
 
     async fn set_receiving(&mut self, on: bool) {
@@ -368,6 +450,22 @@ impl App {
             .await;
         info!("Transfer {id}: {sender} wants to send {what} (PIN {pin})");
         self.by_notification.insert(notification, id.to_string());
+        let files = match &meta.payload {
+            Some(TransferPayload::Files(n)) => n.clone(),
+            _ => vec![],
+        };
+        let view = state::TransferView {
+            id: id.to_string(),
+            sender: sender.clone(),
+            pin: pin.clone(),
+            what: what.clone(),
+            files,
+            total_bytes: meta.total_bytes,
+            ack_bytes: 0,
+            via_wifi: false,
+            phase: state::Phase::Asking,
+            answer_secs: CONSENT_TIMEOUT.as_secs(),
+        };
         self.transfers.insert(
             id.to_string(),
             Transfer {
@@ -376,6 +474,7 @@ impl App {
                 waiting: true,
                 consent_deadline: Some(Instant::now() + CONSENT_TIMEOUT),
                 last_progress: None,
+                view,
             },
         );
 
@@ -393,6 +492,7 @@ impl App {
         }
         t.waiting = false;
         t.consent_deadline = None;
+        t.view.phase = state::Phase::Receiving;
         let notification = t.notification;
         let _ = self.rqs.message_sender.send(ChannelMessage {
             id: id.to_string(),
@@ -422,6 +522,9 @@ impl App {
 
     async fn progress(&mut self, id: &str, meta: &TransferMetadata) {
         let Some(t) = self.transfers.get_mut(id) else { return };
+        t.view.ack_bytes = meta.ack_bytes;
+        t.view.total_bytes = meta.total_bytes.max(t.view.total_bytes);
+        t.view.via_wifi |= meta.via_wifi;
         let now = Instant::now();
         if t.last_progress.is_some_and(|p| now.duration_since(p) < Duration::from_millis(700)) {
             return;
@@ -503,6 +606,30 @@ impl App {
                 timeout_ms: 30_000,
             })
             .await;
+        let item = state::HistoryItem {
+            when: state::now_unix(),
+            sender: t.sender.clone(),
+            kind: match &done {
+                Some(Done::Files(_)) | None => match meta.as_ref().map(|m| &m.payload_kind) {
+                    Some(TransferPayloadKind::WiFi) => state::ItemKind::Wifi,
+                    _ => state::ItemKind::Files,
+                },
+                Some(Done::Text(_)) => state::ItemKind::Text,
+                Some(Done::Url(_)) => state::ItemKind::Link,
+            },
+            files: match &done {
+                Some(Done::Files(p)) => p.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+                _ => vec![],
+            },
+            text: match (&done, meta.as_ref().and_then(|m| m.payload.clone())) {
+                (Some(Done::Text(s)) | Some(Done::Url(s)), _) => s.clone(),
+                (_, Some(TransferPayload::Wifi { ssid, .. })) => ssid,
+                _ => String::new(),
+            },
+            total_bytes: meta.as_ref().map(|m| m.total_bytes).unwrap_or(0),
+            via_wifi: t.view.via_wifi || meta.as_ref().is_some_and(|m| m.via_wifi),
+        };
+        self.remember(item);
         if let Some(done) = done {
             self.results.insert(notification, done);
         }
@@ -522,6 +649,15 @@ impl App {
             TransferState::Rejected => "was declined",
             _ => "was interrupted",
         };
+        self.remember(state::HistoryItem {
+            when: state::now_unix(),
+            sender: t.sender.clone(),
+            kind: state::ItemKind::Failed,
+            files: t.view.files.clone(),
+            text: why.to_string(),
+            total_bytes: t.view.total_bytes,
+            via_wifi: t.view.via_wifi,
+        });
         let summary = format!("Transfer from {} {why}", escape(&t.sender));
         self.desktop
             .notify(Note {

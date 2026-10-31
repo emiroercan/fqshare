@@ -8,6 +8,7 @@ cargo build --release
 install -Dm755 target/release/fqshare "$HOME/.local/bin/fqshare"
 install -Dm644 packaging/fqshare.service "$HOME/.config/systemd/user/fqshare.service"
 install -Dm644 packaging/fqshare.desktop "$HOME/.local/share/applications/fqshare.desktop"
+install -Dm644 packaging/fqshare-tui.desktop "$HOME/.local/share/applications/fqshare-tui.desktop"
 install -Dm644 README.md "$HOME/.local/share/doc/fqshare/README.md"
 mkdir -p "$HOME/Downloads"
 

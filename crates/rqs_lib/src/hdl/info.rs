@@ -65,4 +65,6 @@ pub struct TransferMetadata {
 
     pub total_bytes: u64,
     pub ack_bytes: u64,
+    /// The payload moved from Bluetooth to Wi-Fi (bandwidth upgrade).
+    pub via_wifi: bool,
 }

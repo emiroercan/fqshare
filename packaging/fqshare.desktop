@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FQShare
+GenericName=Receive from phone
+Comment=Receive Quick Share transfers from your phone without a shared network
+Exec=fqshare
+Icon=smartphone
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=quick share;nearby share;android;phone;bluetooth;
+StartupNotify=false

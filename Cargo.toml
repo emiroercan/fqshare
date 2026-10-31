@@ -1,0 +1,28 @@
+[package]
+name = "fqshare"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Receive Quick Share transfers from an Android phone directly, without a shared network"
+
+[workspace]
+members = ["crates/rqs_lib"]
+
+[dependencies]
+rqs_lib = { path = "crates/rqs_lib", default-features = false, features = ["experimental"] }
+anyhow = "1"
+ksni = "0.3"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "fs"] }
+toml = "0.8"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+directories = "6"
+futures = "0.3"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+strip = true

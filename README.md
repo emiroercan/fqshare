@@ -1,4 +1,4 @@
-# FQShare
+# Fedora Quick Share
 
 Receive Quick Share (Nearby Share) transfers from an Android phone on Linux,
 **without a shared network**. The phone can be on mobile data and the laptop on

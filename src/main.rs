@@ -167,6 +167,11 @@ impl App {
                         self.set_receiving(true).await;
                     }
                     Command::OpenFolder => self.desktop.show(&[], &self.cfg.download_dir).await,
+                    Command::RestartBluetooth => {
+                        if self.restart_bluetooth().await {
+                            break;
+                        }
+                    }
                     Command::Quit => break,
                 },
                 Ok(msg) = messages.recv() => self.on_message(msg).await,
@@ -177,6 +182,76 @@ impl App {
             }
         }
         info!("FQShare: quitting");
+    }
+
+    /// Restart bluetoothd (clears stuck devices, e.g. a mouse that is
+    /// connected but sends no input), then restart FQShare so its Bluetooth
+    /// advertisement and GATT service are registered again. Goes through
+    /// systemd + polkit, so the desktop shows the usual password prompt; a
+    /// direct pkexec can't work inside the service sandbox. Returns true when
+    /// the app should exit (systemd brings it back).
+    async fn restart_bluetooth(&mut self) -> bool {
+        use zbus::proxy::MethodFlags;
+        let run = async {
+            let system = zbus::Connection::system().await?;
+            let systemd = zbus::Proxy::new(
+                &system,
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+            )
+            .await?;
+            let _: zbus::zvariant::OwnedObjectPath = systemd
+                .call_with_flags(
+                    "RestartUnit",
+                    MethodFlags::AllowInteractiveAuth.into(),
+                    &("bluetooth.service", "replace"),
+                )
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no reply"))?;
+            anyhow::Ok(())
+        };
+        if let Err(e) = run.await {
+            warn!("Bluetooth restart failed: {e}");
+            self.desktop
+                .notify(Note {
+                    replaces: 0,
+                    icon: "dialog-warning",
+                    summary: "Bluetooth was not restarted",
+                    body: &escape(&e.to_string()),
+                    actions: &[],
+                    resident: false,
+                    critical: false,
+                    timeout_ms: 10_000,
+                })
+                .await;
+            return false;
+        }
+        info!("Bluetooth restarted; restarting FQShare");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if std::env::var_os("INVOCATION_ID").is_some() {
+            // Running as the systemd user service: ask it to restart us.
+            let restart = async {
+                let session = zbus::Connection::session().await?;
+                session
+                    .call_method(
+                        Some("org.freedesktop.systemd1"),
+                        "/org/freedesktop/systemd1",
+                        Some("org.freedesktop.systemd1.Manager"),
+                        "RestartUnit",
+                        &("fqshare.service", "replace"),
+                    )
+                    .await?;
+                anyhow::Ok(())
+            };
+            if let Err(e) = restart.await {
+                warn!("couldn't restart the service: {e}");
+            }
+            // systemd stops and starts us; leave the loop meanwhile.
+            return true;
+        }
+        warn!("Not running under systemd; start FQShare again yourself");
+        true
     }
 
     async fn set_receiving(&mut self, on: bool) {

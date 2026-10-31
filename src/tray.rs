@@ -8,6 +8,7 @@ pub enum Command {
     ToggleReceive,
     Receive,
     OpenFolder,
+    RestartBluetooth,
     Quit,
 }
 
@@ -103,6 +104,17 @@ impl ksni::Tray for Tray {
             }
             .into(),
         ];
+        items.push(
+            StandardItem {
+                label: "Restart Bluetooth (fixes stuck devices)".into(),
+                icon_name: "view-refresh".into(),
+                activate: Box::new(|t: &mut Self| {
+                    let _ = t.tx.send(Command::RestartBluetooth);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
         if !self.hotspot_ready {
             items.push(MenuItem::Separator);
             items.push(
